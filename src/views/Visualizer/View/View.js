@@ -277,7 +277,7 @@ export class Visualizer extends React.Component {
         const styleLegends =
           (styleLayer && styleLayer.advanced_style && styleLayer.advanced_style.legends) || [];
 
-        return [...layer.legends, ...(styleLegends || [])];
+        return [...(layer.legends || []), ...(styleLegends || [])];
       })
       .filter(defined => defined)
       .reduce(
@@ -1037,7 +1037,7 @@ export class Visualizer extends React.Component {
         theme: { logo, brandLogo } = {},
       },
       enableDetailCarrousel,
-onLoadLayerData,
+      onLoadLayerData,
     } = this.props;
 
     const {
@@ -1146,7 +1146,7 @@ onLoadLayerData,
           translate={t}
           layersExtent={bounds}
           isDetailsVisible={isDetailsVisible}
-onLoadLayerData={onLoadLayerData}
+          onLoadLayerData={onLoadLayerData}
         >
           <PrivateLayers layersTree={layersTree} />
           <div
