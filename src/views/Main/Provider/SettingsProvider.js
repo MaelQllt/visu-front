@@ -29,7 +29,7 @@ const DEFAULT_SETTINGS = {
     },
     searchInLayers: true,
     searchInLocations: {
-      enable: false,
+      enable: true,
       searchProvider: {
         provider: 'nominatim',
       },

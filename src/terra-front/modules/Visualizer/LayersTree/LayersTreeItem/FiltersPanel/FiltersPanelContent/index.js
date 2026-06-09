@@ -1,6 +1,17 @@
+import { connectLayersTree } from '../../../LayersTreeProvider/context';
+
+
+// version ES 
 import FiltersPanelContent from './FiltersPanelContent';
 
-import { connectLayersTree } from '../../../LayersTreeProvider/context';
+console.log('[FiltersPanel] version ES');
+
+
+// // version geo-api
+// import FiltersPanelContent from './FiltersPanelContentGeoAPI';
+//
+// console.log('[FiltersPanel] version geo-api');
+
 
 export default connectLayersTree((
   { getLayerState, translate }, // context

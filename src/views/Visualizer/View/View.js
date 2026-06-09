@@ -31,6 +31,7 @@ import {
 } from '@terralego/core/modules/Visualizer';
 import { LayersTree, LayersTreeProvider } from '@terralego/core/modules/Visualizer/LayersTree';
 import {
+  // version ES
   fetchPropertyRange,
   fetchPropertyValues,
   filterFeatures,
@@ -42,6 +43,10 @@ import {
   resetFilters,
   setLayerStateAction,
 } from '@terralego/core/modules/Visualizer/services/layersTreeUtils';
+// import {
+//   fetchPropertyValuesGeoAPI,
+//   fetchPropertyRangeGeoAPI,
+// } from '@terralego/core/modules/Visualizer/services/layersTreeUtilsGeoAPI';
 import searchService, {
   getExtent,
   getSearchParamFromProperty,
@@ -53,6 +58,11 @@ import memoize from 'memoize-one';
 import PropTypes from 'prop-types';
 import React from 'react';
 import { withRouter } from 'react-router-dom';
+
+import Api from '@terralego/core/modules/Api';
+import searchInMap from './search';
+import searchInMapGeoAPI from './searchGeoAPI';
+
 import { connectSettings } from '../../Main/Provider/context';
 
 import BoundingBoxObserver from '../../../components/BoundingBoxObserver';
@@ -61,10 +71,12 @@ import ReportingModule from '../../../components/ReportingModule/ReportingModule
 import TableConnected from './Table';
 import Widgets from './Widgets';
 import { generateClusterList } from './interactions';
-import searchInMap from './search';
 import ShareWrapper from '../../../components/ShareModule/ShareWrapper';
 import { TableSelectionProvider } from '../../../contexts/TableSelectionContext';
 import { useTableSelectionHighlight } from '../../../hooks/useTableSelectionHighlight';
+
+const USE_GEO_API = true;
+
 
 export const INTERACTION_DISPLAY_DETAILS = 'displayDetails';
 
@@ -406,9 +418,24 @@ export class Visualizer extends React.Component {
     return flattenLayers.find(layer => layer.id === targetId) || null;
   };
 
+
   setLayerExtent = bounds => {
     this.setState({ bounds });
   };
+
+  // version geo-api
+  fetchLayerExtentGeoAPI = async (layerName, identifiers = []) => {
+    let url = `${Api.host}/geo-api/${layerName}/feature/extent/`;
+    if (identifiers.length) {
+      url += `?identifier=${identifiers.join(',')}`;
+    }
+    try {
+      const data = await fetch(url).then(r => r.json());
+      return data.bbox; // on aura xmin, ymin, xmax, ymax
+    } catch (e) {
+      return null;
+    }
+  }
 
   interactiveMapInit = interactiveMapInstance => {
     this.setState({
@@ -612,7 +639,80 @@ export class Visualizer extends React.Component {
         };
       });
 
-    if (this.activeAndSearchableLayers.length > 0) {
+    // // bloc ES
+    // if (this.activeAndSearchableLayers.length > 0) {
+    //   const availableFeatures = await searchService.msearch(
+    //     this.activeAndSearchableLayers.map(
+    //       ([
+    //         {
+    //           filters: { layer },
+    //           baseEsQuery,
+    //         },
+    //       ]) => ({
+    //         query,
+    //         properties: (filters.find(({ index }) => index === layer) || {}).properties || {},
+    //         index: layer,
+    //         baseQuery: baseEsQuery,
+    //         size: 1,
+    //         aggregations: [
+    //           {
+    //             type: 'geo_bounds',
+    //             field: 'geom',
+    //             name: 'viewport',
+    //             options: { wrap_longitude: true },
+    //           },
+    //         ],
+    //       }),
+    //     ),
+    //   );
+
+    //   const { responses } = availableFeatures;
+    //   const results = responses
+    //     .map(
+    //       ({
+    //         hits: { hits },
+    //         aggregations: {
+    //           viewport: { bounds: { top_left: topLeft, bottom_right: bottomRight } = {} } = {},
+    //         },
+    //       }) => {
+    //         if (hits.length === 0) {
+    //           return {};
+    //         }
+    //         const { _index: layerIndex } = hits.find(({ _index: index }) => index);
+    //         const [{ label }] = this.activeAndSearchableLayers.find(
+    //           ([
+    //             {
+    //               filters: { layer },
+    //             },
+    //           ]) => layer === layerIndex,
+    //         );
+    //         return { [label]: [topLeft.lon, topLeft.lat, bottomRight.lon, bottomRight.lat] };
+    //       },
+    //     )
+    //     .reduce((acc, curr) => ({ ...acc, ...curr }), {});
+    //   this.setLayerExtent(results);
+    // }
+
+    if (USE_GEO_API) {
+      // avec geo-api
+      if (this.activeAndSearchableLayers.length > 0 && !this.isSearching) {
+        const bboxes = await Promise.all(
+          this.activeAndSearchableLayers.map(async ([layerConfig]) => {
+            const { filters: { layer: layerName }, label } = layerConfig;
+            const bbox = await this.fetchLayerExtentGeoAPI(layerName);
+            return { label, bbox };
+          }),
+        );
+        const results = bboxes.reduce((acc, { label, bbox }) => {
+          if (bbox) acc[label] = bbox;
+          return acc;
+        }, {});
+        if (Object.keys(results).length) {
+          this.setLayerExtent(results);
+        }
+      }
+    } else if (this.activeAndSearchableLayers.length > 0) {
+      // avec ES
       const availableFeatures = await searchService.msearch(
         this.activeAndSearchableLayers.map(
           ([
@@ -712,6 +812,29 @@ export class Visualizer extends React.Component {
       0,
     );
 
+    if (USE_GEO_API) {
+      // geo-api pour couches filtrées
+      if (this.activeAndSearchableLayers.length > 0) {
+        const bboxes = await Promise.all(
+          this.activeAndSearchableLayers.map(async ([layerConfig]) => {
+            const { filters: { layer: layerName }, label, id: layerId } = layerConfig;
+            const layerFeatures = features[layerId]?.features;
+            const bbox = layerFeatures?.length
+              ? await this.fetchLayerExtentGeoAPI(layerName, layerFeatures)
+              : await this.fetchLayerExtentGeoAPI(layerName);
+            return { label, bbox };
+          }),
+        );
+        const results = bboxes.reduce((acc, { label, bbox }) => {
+          if (bbox) acc[label] = bbox;
+          return acc;
+        }, {});
+        if (Object.keys(results).length) {
+          this.setLayerExtent(results);
+        }
+      }
+    }
+
     this.setLayersResult(
       filters.map(({ layer }, index) => {
         const total = countResponses[index].hits ? countResponses[index].hits.total.value : null;
@@ -776,47 +899,66 @@ export class Visualizer extends React.Component {
     this.setState({ printIsOpened });
   };
 
-  searchResultClick = ({
+
+  
+
+  searchResultClick = async ({
     result,
     result: { label, layers, id },
     map,
     focusOnSearchResult,
     setQuery,
   }) => {
-    focusOnSearchResult(result);
     setQuery(label);
     this.hideDetails();
 
-    map.once('moveend', () => {
-      const { interactions } = this.state;
-      const interaction = interactions.find(
-        ({ id: iId, trigger = 'click' }) => layers.includes(iId) && trigger === 'click',
-      );
+    // Zoom : extent depuis geo-api si dispo
+    if (result.layerName && id) {
+      try {
+        const url = `${Api.host}/geo-api/${result.layerName}/feature/extent/?identifier=${id}`;
+        const data = await fetch(url).then(r => r.json());
+        if (data.bbox) {
+          focusOnSearchResult({ bounds: data.bbox });
+        }
+      } catch (e) { /* silence */ }
+    } else if (result.bounds || result.center) {
+      focusOnSearchResult(result);
+    }
 
-      if (!interaction) return;
+    if (!layers) return;
 
-      let layerName = interaction.id;
-      if (!map.getLayer(layerName)) {
-        layerName = `${interaction.id}-cluster-data`;
-      }
+    const { interactions, interactiveMapInstance } = this.state;
+    const interaction = interactions.find(
+      ({ id: iId, trigger = 'click' }) => layers.includes(iId) && trigger === 'click',
+    );
+    if (!interaction) return;
 
-      if (!map.getLayer(layerName)) {
-        return;
-      }
+    const mapLayer = map.getLayer(interaction.id);
+    if (!mapLayer) return;
 
-      const features = map.queryRenderedFeatures({
-        layers: [layerName],
-        filter: ['==', ['to-string', ['get', '_id']], `${id}`],
-      });
+    const mapboxFeature = {
+      type: 'Feature',
+      properties: {
+        _id: result._feature_id || id,
+      },
+      geometry: result.geom || null,
+      layer: {
+        id: mapLayer.id,
+        source: mapLayer.source,
+      },
+      source: mapLayer.source,
+      sourceLayer: mapLayer.sourceLayer,
+    };
 
-      if (!features.length) return;
-
-      map.triggerInteraction({
-        interaction,
-        feature: features[0],
-      });
-      map.fire('updateMap');
+    interaction.fn({
+      feature: mapboxFeature,
+      map,
+      event: {},
+      layerId: mapLayer.id,
+      instance: interactiveMapInstance,
     });
+
+    map.fire('updateMap');
   };
 
   updateLayersTreeState = layersTreeState => {
@@ -1115,14 +1257,36 @@ export class Visualizer extends React.Component {
 
     if (displaySearchInMap) {
       const search = controls.find(({ control }) => control === CONTROL_SEARCH);
-      search.onSearch = searchInMap({
-        language,
-        searchProvider,
-        locationsEnable,
-        layersEnable,
-        translate: t,
-        layers: activeAndSearchableLayers,
-      });
+      // // ES search (décommenter pour comparer)
+      // search.onSearch = searchInMap({
+      //   language,
+      //   searchProvider,
+      //   locationsEnable,
+      //   layersEnable,
+      //   translate: t,
+      //   layers: activeAndSearchableLayers,
+      // });
+      if (USE_GEO_API) {
+        // geo-api
+        search.onSearch = searchInMapGeoAPI({
+          language,
+          searchProvider,
+          locationsEnable,
+          layersEnable,
+          translate: t,
+          layers: activeAndSearchableLayers,
+        });
+      } else {
+        // ES
+        search.onSearch = searchInMap({
+          language,
+          searchProvider,
+          locationsEnable,
+          layersEnable,
+          translate: t,
+          layers: activeAndSearchableLayers,
+        });
+      }
       search.onSearchResultClick = this.searchResultClick;
     }
 
@@ -1135,6 +1299,7 @@ export class Visualizer extends React.Component {
     return (
       <TableSelectionProvider>
         <TableSelectionHighlightManager map={map} />
+        {/* version geo-api - bloc ES debug : fetchPropertyValues={fetchPropertyValues} */}
         <LayersTreeProvider
           map={map}
           layersTree={layersTree}
@@ -1142,6 +1307,8 @@ export class Visualizer extends React.Component {
           initialLayersTreeState={layersTreeState}
           fetchPropertyValues={fetchPropertyValues}
           fetchPropertyRange={fetchPropertyRange}
+          // fetchPropertyValues={fetchPropertyValuesGeoAPI}
+          // fetchPropertyRange={fetchPropertyRangeGeoAPI}
           translate={t}
           layersExtent={bounds}
           isDetailsVisible={isDetailsVisible}

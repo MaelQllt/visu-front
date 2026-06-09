@@ -193,9 +193,11 @@ export class Search {
     index = DEFAULT_INDEX,
   */}) {
     const body = buildQuery(query);
-    const { index } = query;
+    const { index, size = MAX_SIZE } = query;
     const action = {
       body,
+      queuedAt: performance.now(),
+      size,
     };
     if (index) {
       action.header = { index };
@@ -241,9 +243,11 @@ export class Search {
    * Consume SEARCHES_QUEUE as a batch of queries and send them as msearch.
    */
   batchSearch = debounce(async () => {
+    // On garde une copie de la file pour accéder à nos données queuedAt et size plus bas
+    const queueItems = Array.from(SEARCHES_QUEUE.values());
+
     // Consume the queue and reduce it to headers, bodies and resolvers
-    const [headers, bodies, resolves] = Array
-      .from(SEARCHES_QUEUE.values())
+    const [headers, bodies, resolves] = queueItems
       .reduce(
         ([allHeaders, allBodies, allResolves], { header = {}, body, resolve }) =>
           [[...allHeaders, header], [...allBodies, body], [...allResolves, resolve]],
@@ -254,11 +258,52 @@ export class Search {
     const batchBody = bodies
       .map((body, index) => ([headers[index], body]))
       .reduce((body, [header, query]) => [...body, header, query], []);
+      
     SEARCHES_QUEUE.clear();
 
+    // Top chrono réseau ES
+    const esStartTime = performance.now();
+    
     // Perform the request and run all responses through the corresponding resolver
     const { responses } = await this.client.msearch({ body: batchBody }) || {};
-    resolves.forEach((resolve, index) => resolve(responses?.[index]));
+    
+    // Fin du chrono réseau ES
+    const esEndTime = performance.now();
+    const esDuration = esEndTime - esStartTime;
+    const logData = [];
+
+    // Résolution des promesses et construction du tableau de logs
+    resolves.forEach((resolve, index) => {
+      const response = responses?.[index];
+      const item = queueItems[index];
+
+      // Calcul des durées par requête
+      const queueDuration = item.queuedAt ? (esStartTime - item.queuedAt) : 500;
+      const totalDuration = item.queuedAt ? (esEndTime - item.queuedAt) : (500 + esDuration);
+      
+      // Extraction sécurisée des hits
+      const resultsCount = response?.hits?.hits?.length || 0;
+      const totalHits = response?.hits?.total?.value ?? response?.hits?.total ?? 0;
+
+      // Ajout dans notre tableau de logs
+      logData.push({
+        size: item.size || 'N/A',
+        'Queue Duration': `${Math.round(queueDuration)}ms`,
+        'ES Request': `${Math.round(esDuration)}ms`,
+        'Total Duration': `${Math.round(totalDuration)}ms`,
+        Results: resultsCount,
+        'Total Hits': totalHits,
+      });
+
+      resolve(response);
+    });
+
+    // Affichage dans la console
+    if (logData.length > 0) {
+      console.group('ES Search Timing');
+      console.table(logData);
+      console.groupEnd();
+    }
   }, 500)
 }
 
