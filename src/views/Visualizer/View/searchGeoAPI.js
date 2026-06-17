@@ -53,6 +53,7 @@ export const fetchNominatim = async ({
 async function fetchLayerResults(layerName, query) {
   console.log(`[Search] geo-api ${layerName} q="${query}"`);
   try {
+    // endpoint /geo-api
     const url = `${Api.host}/geo-api/${layerName}/feature/?search=${encodeURIComponent(query)}&limit=5`;
     const debut = performance.now();
     const response = await fetch(url);
@@ -63,7 +64,9 @@ async function fetchLayerResults(layerName, query) {
       return { features: [], count: 0, timing: fin - debut };
     }
     return {
-      features: (data.results && data.results.features) || data.features || [],
+      features: (
+        Array.isArray(data.results) ? data.results : data.results?.features
+      ) || data.features || [],
       count: data.count || 0,
       timing: fin - debut,
     };
@@ -74,7 +77,7 @@ async function fetchLayerResults(layerName, query) {
 }
 
 
-const searchInMapGeoAPI = ({
+const searchInMapGeoAPI = ({ 
   searchProvider: { provider, baseUrl, options = {} } = {},
   layers,
   translate,
@@ -91,7 +94,7 @@ const searchInMapGeoAPI = ({
 
   let results = [];
   if (layersEnable) {
-    // GeoAPI search (results used for display)
+    // geo api
     const geoPromise = Promise.all(
       layers.map(async ([{
         filters: { layer, mainField },
@@ -137,6 +140,7 @@ const searchInMapGeoAPI = ({
     const layerResultsGeo = await geoPromise;
 
     // ajout du bloc si 0 résultat sinon juste pas de bloc
+    // à voir si on garde  
     results = layerResultsGeo.filter(({ total }) => total > 0);
     if (!results.length && !locations.length) {
       results.push({

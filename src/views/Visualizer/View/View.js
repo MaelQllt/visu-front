@@ -75,8 +75,7 @@ import ShareWrapper from '../../../components/ShareModule/ShareWrapper';
 import { TableSelectionProvider } from '../../../contexts/TableSelectionContext';
 import { useTableSelectionHighlight } from '../../../hooks/useTableSelectionHighlight';
 
-const USE_GEO_API = true;
-
+const USE_GEO_API = true; 
 
 export const INTERACTION_DISPLAY_DETAILS = 'displayDetails';
 
