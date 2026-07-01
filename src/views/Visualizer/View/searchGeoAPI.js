@@ -1,5 +1,4 @@
 import Api from '@terralego/core/modules/Api';
-import searchInMap from './search';  // bloc ES debug
 
 export const fetchNominatim = async ({
   query,
@@ -51,9 +50,7 @@ export const fetchNominatim = async ({
 };
 
 async function fetchLayerResults(layerName, query) {
-  console.log(`[Search] geo-api ${layerName} q="${query}"`);
   try {
-    // endpoint /geo-api
     const url = `${Api.host}/geo-api/${layerName}/feature/?search=${encodeURIComponent(query)}&limit=5`;
     const debut = performance.now();
     const response = await fetch(url);
@@ -76,8 +73,7 @@ async function fetchLayerResults(layerName, query) {
   }
 }
 
-
-const searchInMapGeoAPI = ({ 
+const searchInMapGeoAPI = ({
   searchProvider: { provider, baseUrl, options = {} } = {},
   layers,
   translate,
@@ -110,7 +106,7 @@ const searchInMapGeoAPI = ({
               ? `${feature.properties[feature.properties.search_match]} (${feature.properties.search_match})`
               : (feature.properties?.[mainField] || feature.id),
             ...feature.properties,
-            id: feature.identifier, /// C'ÉTAIT ICI LE BUG !!!!!!!
+            id: feature.identifier,
             layers: resultsLayers,
             layerName: layer,
           })),
@@ -118,29 +114,8 @@ const searchInMapGeoAPI = ({
       }),
     );
 
-    // // bloc ES debug
-    // const esPromise = searchInMap({
-    //   searchProvider: { provider, baseUrl, options },
-    //   layers,
-    //   translate,
-    //   locationsEnable,
-    //   layersEnable,
-    //   language,
-    // })(query);
-    // const [, layerResultsEs] = await Promise.all([geoPromise, esPromise]);
-    // 
-    // if (process.env.NODE_ENV !== 'production') {
-    //   layers.forEach(([{ filters: { layer } }], i) => {
-    //     const es = layerResultsEs[i];
-    //     const geo = layerResultsGeo[i];
-    //     console.log(`[Search] ${layer} - ES:${es?.total ?? '?'} Geo:${geo?.total ?? '?'}`);
-    //   });
-    // }
-
     const layerResultsGeo = await geoPromise;
 
-    // ajout du bloc si 0 résultat sinon juste pas de bloc
-    // à voir si on garde  
     results = layerResultsGeo.filter(({ total }) => total > 0);
     if (!results.length && !locations.length) {
       results.push({
