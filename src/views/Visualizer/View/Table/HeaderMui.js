@@ -16,7 +16,7 @@ import ColumnsSelectorMui from './ColumnsSelectorMui';
 import HeaderButton from './HeaderButton';
 import HeaderDropdownButton from './HeaderDropdownButton';
 
-const getIds = features => features.map(({ _id }) => _id).join(',');
+const getIds = features => features.map(f => (f.identifier != null ? f.identifier : f._id)).join(',');
 
 const close = (setLayerState, layer) => () => {
   if (setLayerState && layer) {

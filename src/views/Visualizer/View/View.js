@@ -424,13 +424,13 @@ export class Visualizer extends React.Component {
 
   // version geo-api
   fetchLayerExtentGeoAPI = async (layerName, identifiers = []) => {
-    let url = `${Api.host}/geo-api/${layerName}/feature/extent/`;
+    let path = `geo-api/${layerName}/feature/extent/`;
     if (identifiers.length) {
-      url += `?identifier=${identifiers.join(',')}`;
+      path += `?identifier=${identifiers.join(',')}`;
     }
     try {
-      const data = await fetch(url).then(r => r.json());
-      return data.bbox; // on aura xmin, ymin, xmax, ymax
+      const data = await Api.request(path);
+      return data.bbox;
     } catch (e) {
       return null;
     }

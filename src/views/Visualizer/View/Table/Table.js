@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useReducer } from 'react';
 import PropTypes from 'prop-types';
 import classnames from 'classnames';
 import { createPortal } from 'react-dom';
@@ -8,6 +8,10 @@ import bbox from '@turf/bbox';
 
 import { extractColumns, prepareData, exportSpreadsheet } from './dataUtils';
 import { fetchTableData, fetchGeometriesByIds, getExtent } from './tableService';
+
+import { fetchTableDataGeoAPI, fetchExtentByIds } from './tableServiceGeoAPI';
+import { extractColumnsGeoAPI, prepareDataGeoAPI } from './dataUtilsGeoAPI';
+
 import HeaderMui from './HeaderMui';
 import DataTable from '../DataTable';
 import { useTableSelection } from '../../../../contexts/TableSelectionContext';
@@ -18,6 +22,46 @@ import './styles.scss';
 const TABLE_HEIGHT_DEFAULT = 33;
 const TABLE_HEIGHT_MIN = 20;
 const TABLE_HEIGHT_MAX = 90;
+
+const USE_GEO_API = true; // false = ES
+
+const currentFetchTableData = USE_GEO_API ? fetchTableDataGeoAPI : fetchTableData;
+const currentExtractColumns = USE_GEO_API ? extractColumnsGeoAPI : extractColumns;
+const currentPrepareData = USE_GEO_API ? prepareDataGeoAPI : prepareData;
+
+const getFeatureId = feature => (USE_GEO_API ? feature?.identifier : feature?._id);
+
+const TABLE_INITIAL_STATE = {
+  columns: [],
+  rows: [],
+  resultsTotal: 0,
+  totalWithoutFilter: 0,
+  features: [],
+  loading: true,
+};
+
+function tableReducer(state, action) {
+  switch (action.type) {
+    case 'LOADING':
+      return { ...state, loading: true };
+    case 'LOADED':
+      return {
+        ...state,
+        columns: action.columns,
+        rows: action.rows,
+        resultsTotal: action.resultsTotal,
+        totalWithoutFilter: action.totalWithoutFilter,
+        features: action.features,
+        loading: false,
+      };
+    case 'RESET':
+      return { ...TABLE_INITIAL_STATE, loading: true };
+    case 'LOADING_DONE':
+      return { ...state, loading: false };
+    default:
+      return state;
+  }
+}
 
 const DataTableMui = ({
   displayedLayer,
@@ -33,16 +77,16 @@ const DataTableMui = ({
   interactiveMapInstance,
   hideDetails,
 }) => {
-  const [columns, setColumns] = useState([]);
+  const [tableState, dispatch] = useReducer(tableReducer, TABLE_INITIAL_STATE);
+  const { columns, rows, resultsTotal, totalWithoutFilter, features, loading } = tableState;
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(25);
+  const [sorting, setSorting] = useState([]);
+  const featuresCacheRef = React.useRef({});
   const [columnVisibility, setColumnVisibility] = useState({});
-  const [rows, setRows] = useState([]);
-  const [resultsTotal, setResultsTotal] = useState(0);
-  const [totalWithoutFilter, setTotalWithoutFilter] = useState(0);
-  const [loading, setLoading] = useState(true);
   const [extent, setExtent] = useState(false);
   const [full, setFull] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
-  const [features, setFeatures] = useState([]);
   const [tableHeight, setTableHeightLocal] = useState(TABLE_HEIGHT_DEFAULT);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartY, setDragStartY] = useState(0);
@@ -96,8 +140,10 @@ const DataTableMui = ({
     if (!data || !blueprintColumns) return [];
 
     return data.map((row, rowIndex) => {
+      const hit = hits?.[rowIndex];
+      const id = getFeatureId(hit) || `row_${rowIndex}`;
       const rowObj = {
-        id: hits?.[rowIndex]?._id || `row_${rowIndex}`,
+        id,
       };
       blueprintColumns.forEach((col, colIndex) => {
         const fieldName = col.value || `col_${colIndex}`;
@@ -116,14 +162,18 @@ const DataTableMui = ({
       baseEsQuery,
     } = displayedLayer;
 
-    setLoading(true);
+    dispatch({ type: 'LOADING' });
 
     const boundingBox = extent && currentVisibleBoundingBox
       ? getExtent(map, currentVisibleBoundingBox)
       : undefined;
 
+    const sortParam = USE_GEO_API && sorting[0]
+      ? `${sorting[0].desc ? '-' : ''}${sorting[0].id}`
+      : undefined;
+
     try {
-      const { hits, total, unfilteredTotal } = await fetchTableData({
+      const { hits, total, unfilteredTotal } = await currentFetchTableData({
         layer,
         fields,
         form,
@@ -131,31 +181,35 @@ const DataTableMui = ({
         baseEsQuery,
         query,
         boundingBox,
+        page,
+        pageSize,
+        sort: sortParam,
       });
 
-      const extractedColumns = extractColumns(fields, hits);
-      const preparedData = prepareData(extractedColumns, hits);
+      const extractedColumns = currentExtractColumns(fields, hits);
+      const preparedData = currentPrepareData(extractedColumns, hits);
+      const newRows = transformData(extractedColumns, preparedData, hits);
 
-      setFeatures(hits);
-      setColumns(extractedColumns);
-      setResultsTotal(total);
-      setTotalWithoutFilter(unfilteredTotal);
-      setRows(transformData(extractedColumns, preparedData, hits));
-      const newCache = new Map(previousRowsByIdRef.current);
-      preparedData.forEach((row, idx) => {
-        const rowId = hits?.[idx]?._id || `row_${idx}`;
-        newCache.set(String(rowId), {
-          id: rowId,
-          ...row,
-        });
+      dispatch({
+        type: 'LOADED',
+        columns: extractedColumns,
+        rows: newRows,
+        resultsTotal: total,
+        totalWithoutFilter: unfilteredTotal,
+        features: hits,
       });
-      previousRowsByIdRef.current = newCache;
+
+      const rowsCache = new Map(previousRowsByIdRef.current);
+      newRows.forEach(row => {
+        rowsCache.set(String(row.id), row);
+      });
+      previousRowsByIdRef.current = rowsCache;
     } catch (error) {
       console.error('Error loading results:', error);
     } finally {
-      setLoading(false);
+      dispatch({ type: 'LOADING_DONE' });
     }
-  }, [displayedLayer, query, extent, map, transformData]);
+  }, [displayedLayer, query, extent, map, transformData, page, pageSize, sorting]);
 
   const loadResultsRef = React.useRef(loadResults);
   loadResultsRef.current = loadResults;
@@ -166,6 +220,9 @@ const DataTableMui = ({
     extent: false,
     bboxKey: null,
     filtersKey: null,
+    page: 0,
+    pageSize: 25,
+    sorting: [],
   });
 
   const bboxKey = useMemo(() => {
@@ -187,9 +244,17 @@ const DataTableMui = ({
     const extentChanged = prev.extent !== extent;
     const bboxChanged = extent && prev.bboxKey !== bboxKey;
     const filtersChanged = prev.filtersKey !== filtersKey;
+    // En mode ES, page/pageSize ne changent jamais donc paginationChanged = false
+    // En mode geo-api, DataTable appelle setPage/setPageSize donc refetch
+    const paginationChanged = USE_GEO_API
+      && (prev.page !== page || prev.pageSize !== pageSize);
+    
+    const sortingChanged = USE_GEO_API
+      && JSON.stringify(prev.sorting) !== JSON.stringify(sorting);
 
     const shouldRefetch =
-      layerChanged || queryChanged || extentChanged || bboxChanged || filtersChanged;
+      layerChanged || queryChanged || extentChanged || bboxChanged || filtersChanged
+      || paginationChanged || sortingChanged;
 
     if (!shouldRefetch) return;
 
@@ -199,10 +264,44 @@ const DataTableMui = ({
       extent,
       bboxKey,
       filtersKey,
+      page,
+      pageSize,
+      sorting,
     };
 
     loadResultsRef.current(extent ? visibleBoundingBox : null);
-  }, [displayedLayer, query, extent, bboxKey, filtersKey, visibleBoundingBox]);
+  }, [
+    displayedLayer,
+    query,
+    extent,
+    bboxKey,
+    filtersKey,
+    visibleBoundingBox,
+    page,
+    pageSize,
+    sorting,
+  ]);
+
+  useEffect(() => {
+    if (!USE_GEO_API) return;
+    const newCache = { ...featuresCacheRef.current };
+    const selectedIds = Object.keys(rowSelection || {}).filter(k => rowSelection[k]);
+
+    features.forEach(f => {
+      if (selectedIds.includes(f.identifier)) {
+        newCache[f.identifier] = f;
+      }
+    });
+
+    const detailId = details?.feature?.properties?._id;
+    Object.keys(newCache).forEach(id => {
+      if (!selectedIds.includes(id) && id !== detailId) {
+        delete newCache[id];
+      }
+    });
+
+    featuresCacheRef.current = newCache;
+  }, [rowSelection, features, details]);
 
   useEffect(() => {
     if (!map) return;
@@ -231,12 +330,10 @@ const DataTableMui = ({
 
     const layerId = displayedLayer.id;
     if (previousLayerIdRef.current !== layerId) {
-      setLoading(true);
-      setRows([]);
-      setResultsTotal(0);
-      setFeatures([]);
+      dispatch({ type: 'RESET' });
       setRowSelection({});
       setColumnVisibility({});
+      setSorting([]);
       previousRowsByIdRef.current = new Map();
     }
     previousLayerIdRef.current = layerId;
@@ -295,7 +392,7 @@ const DataTableMui = ({
     }, []);
 
     const columnLabels = columns.map(({ value, label = value }) => label);
-    const preparedData = prepareData(columns, features);
+    const preparedData = currentPrepareData(columns, features);
     const data = [columnLabels, ...preparedData].map(dataLine =>
       exportableColumnIndexes.map(index => dataLine[index]),
     );
@@ -347,57 +444,86 @@ const DataTableMui = ({
     if (!displayedLayer || !map || selectedFeaturesList.length === 0) return;
 
     const { filters: { layer: esIndex } = {}, baseEsQuery } = displayedLayer;
-    const ids = selectedFeaturesList.map(f => f._id);
+
+    // getFeatureId : ES : _id, geo-api : identifier
+    const ids = selectedFeaturesList.map(f => getFeatureId(f));
 
     try {
-      const geometries = await fetchGeometriesByIds({
-        layer: esIndex,
-        ids,
-        baseEsQuery,
-      });
+      if (USE_GEO_API) {
+        // geo-api : fetchExtentByIds retourne directement le bbox
+        // Pas besoin de @turf/bbox ni de featureCollection
+        const extentBbox = await fetchExtentByIds({ layer: esIndex, ids });
+        if (!extentBbox) return;
 
-      if (geometries.length === 0) {
-        return;
-      }
+        // bbox = [xmin, ymin, xmax, ymax] (même format que turf.bbox)
+        const mapContainer = map.getContainer();
+        const mapRect = mapContainer.getBoundingClientRect();
+        const mapWidth = mapContainer.offsetWidth;
+        const mapHeight = mapContainer.offsetHeight;
 
-      const featureCollection = {
-        type: 'FeatureCollection',
-        features: geometries.map(geom => ({
-          type: 'Feature',
-          geometry: geom,
-          properties: {},
-        })),
-      };
+        let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
+        if (visibleBoundingBox) {
+          const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
+          const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
+          const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
+          const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
+          fitPadding = {
+            top: visibleTop + 20,
+            left: visibleLeft + 20,
+            right: mapWidth - visibleRight + 20,
+            bottom: mapHeight - visibleBottom + 20,
+          };
+        }
 
-      const bounds = bbox(featureCollection);
+        map.fitBounds(
+          [[extentBbox[0], extentBbox[1]], [extentBbox[2], extentBbox[3]]],
+          { padding: fitPadding, maxZoom: 18 },
+        );
+      } else {
+        // ES : comportement existant (fetchGeometriesByIds + @turf/bbox)
+        const geometries = await fetchGeometriesByIds({
+          layer: esIndex,
+          ids,
+          baseEsQuery,
+        });
+        if (geometries.length === 0) return;
 
-      const mapContainer = map.getContainer();
-      const mapRect = mapContainer.getBoundingClientRect();
-      const mapWidth = mapContainer.offsetWidth;
-      const mapHeight = mapContainer.offsetHeight;
-
-      let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
-
-      if (visibleBoundingBox) {
-        const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
-        const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
-        const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
-        const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
-
-        fitPadding = {
-          top: visibleTop + 20,
-          left: visibleLeft + 20,
-          right: mapWidth - visibleRight + 20,
-          bottom: mapHeight - visibleBottom + 20,
+        const featureCollection = {
+          type: 'FeatureCollection',
+          features: geometries.map(geom => ({
+            type: 'Feature',
+            geometry: geom,
+            properties: {},
+          })),
         };
-      }
+        const bounds = bbox(featureCollection);
 
-      map.fitBounds(
-        [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
-        { padding: fitPadding, maxZoom: 18 },
-      );
+        const mapContainer = map.getContainer();
+        const mapRect = mapContainer.getBoundingClientRect();
+        const mapWidth = mapContainer.offsetWidth;
+        const mapHeight = mapContainer.offsetHeight;
+
+        let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
+        if (visibleBoundingBox) {
+          const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
+          const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
+          const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
+          const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
+          fitPadding = {
+            top: visibleTop + 20,
+            left: visibleLeft + 20,
+            right: mapWidth - visibleRight + 20,
+            bottom: mapHeight - visibleBottom + 20,
+          };
+        }
+
+        map.fitBounds(
+          [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
+          { padding: fitPadding, maxZoom: 18 },
+        );
+      }
     } catch (error) {
-      console.error('Error fetching geometries for zoom:', error);
+      console.error('Error fetching extent for zoom:', error);
     }
   }, [displayedLayer, map, visibleBoundingBox]);
 
@@ -497,44 +623,85 @@ const DataTableMui = ({
     return cleanup;
   }, [extent, map, visibleBoundingBox]);
 
-  const openFeatureDetails = useCallback(featureId => {
+  const openFeatureDetails = useCallback(async featureId => {
     if (!detailsFunction?.fn || !map || !displayedLayer) return;
 
-    const esFeature = features.find(f => f._id === featureId);
-    if (!esFeature) {
-      console.warn(`Feature with ID ${featureId} not found`);
-      return;
-    }
-
     const mapboxLayerId = displayedLayer.layers?.[0];
-    const mapLayer = map.getLayer(mapboxLayerId) ?? map.getLayer(`${mapboxLayerId}-cluster-data`);
+    const mapLayer = map.getLayer(mapboxLayerId)
+      ?? map.getLayer(`${mapboxLayerId}-cluster-data`);
     if (!mapLayer) {
       console.warn(`Layer ${mapboxLayerId} not found in map`);
       return;
     }
 
-    const mapboxFeature = {
-      type: 'Feature',
-      properties: {
-        ...esFeature._source,
-        _id: featureId,
-      },
-      geometry: esFeature._source?.geom || null,
-      layer: {
-        id: mapboxLayerId,
-        source: mapLayer.source,
-      },
-      source: mapLayer.source,
-      sourceLayer: mapLayer.sourceLayer,
-    };
+    if (USE_GEO_API) {
+      let feature = features.find(f => f.identifier === featureId)
+        || featuresCacheRef.current[featureId];
+      if (!feature) {
+        try {
+          const { fetchFeatureGeoAPI } = await import('./tableServiceGeoAPI');
+          const { layer } = displayedLayer.filters;
+          feature = await fetchFeatureGeoAPI({ layer, identifier: featureId });
+          featuresCacheRef.current[featureId] = feature;
+        } catch (e) {
+          console.warn(`Feature with ID ${featureId} not found (fetch fallback failed)`);
+          return;
+        }
+      }
 
-    detailsFunction.fn({
-      feature: mapboxFeature,
-      map,
-      event: {},
-      layerId: mapboxLayerId,
-      instance: interactiveMapInstance,
-    });
+      const mapboxFeature = {
+        type: 'Feature',
+        properties: {
+          ...feature.properties,
+          _id: featureId, // conservé pour compatibilité avec DetailPanel
+        },
+        geometry: null, // FeatureListSerializer n'inclut pas geom
+        layer: {
+          id: mapboxLayerId,
+          source: mapLayer.source,
+        },
+        source: mapLayer.source,
+        sourceLayer: mapLayer.sourceLayer,
+      };
+
+      detailsFunction.fn({
+        feature: mapboxFeature,
+        map,
+        event: {},
+        layerId: mapboxLayerId,
+        instance: interactiveMapInstance,
+      });
+    } else {
+      // ES : comportement existant inchangé
+      const esFeature = features.find(f => f._id === featureId);
+      if (!esFeature) {
+        console.warn(`Feature with ID ${featureId} not found`);
+        return;
+      }
+
+      const mapboxFeature = {
+        type: 'Feature',
+        properties: {
+          ...esFeature._source,
+          _id: featureId,
+        },
+        geometry: esFeature._source?.geom || null,
+        layer: {
+          id: mapboxLayerId,
+          source: mapLayer.source,
+        },
+        source: mapLayer.source,
+        sourceLayer: mapLayer.sourceLayer,
+      };
+
+      detailsFunction.fn({
+        feature: mapboxFeature,
+        map,
+        event: {},
+        layerId: mapboxLayerId,
+        instance: interactiveMapInstance,
+      });
+    }
   }, [detailsFunction, features, map, displayedLayer, interactiveMapInstance]);
 
   const columnsWithDisplay = useMemo(
@@ -641,8 +808,17 @@ const DataTableMui = ({
                   onRowSelectionChange={setRowSelection}
                   onOpenDetails={openFeatureDetails}
                   onHideDetails={hideDetails}
-                  pageSize={25}
+                  pageSize={USE_GEO_API ? pageSize : 25}
                   rowCache={rowCacheMemo}
+                  // Props pagination serveur (ignorées par DataTable si manualPagination = false)
+                  manualPagination={USE_GEO_API}
+                  totalCount={USE_GEO_API ? resultsTotal : undefined}
+                  page={USE_GEO_API ? page : undefined}
+                  onPageChange={USE_GEO_API ? setPage : undefined}
+                  onPageSizeChange={USE_GEO_API ? setPageSize : undefined}
+                  manualSorting={USE_GEO_API}
+                  sorting={USE_GEO_API ? sorting : undefined}
+                  onSortingChange={USE_GEO_API ? setSorting : undefined}
                 />
               </Box>
             </>

@@ -16,7 +16,7 @@ export const TableSelectionProvider = ({ children }) => {
   const selectedFeatures = useMemo(() => {
     return Object.keys(rowSelection)
       .filter(key => rowSelection[key])
-      .map(id => ({ _id: id }));
+      .map(id => ({ identifier: id, _id: id }));
   }, [rowSelection]);
 
   const value = useMemo(

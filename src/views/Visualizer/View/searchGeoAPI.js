@@ -51,15 +51,9 @@ export const fetchNominatim = async ({
 
 async function fetchLayerResults(layerName, query) {
   try {
-    const url = `${Api.host}/geo-api/${layerName}/feature/?search=${encodeURIComponent(query)}&limit=5`;
     const debut = performance.now();
-    const response = await fetch(url);
-    const data = await response.json();
+    const data = await Api.request(`geo-api/${layerName}/feature/?search=${encodeURIComponent(query)}&limit=5`);
     const fin = performance.now();
-    if (!response.ok) {
-      console.warn('[GeoAPI] fetchLayerResults not ok:', response.status, response.statusText);
-      return { features: [], count: 0, timing: fin - debut };
-    }
     return {
       features: (
         Array.isArray(data.results) ? data.results : data.results?.features

@@ -356,7 +356,15 @@ const DataTable = ({
   loading,
   rowSelection,
   onRowSelectionChange,
-  pageSize,
+  manualPagination = false,
+  manualSorting = false,
+  sorting = [],
+  onSortingChange = () => {},
+  totalCount,
+  page = 0,
+  onPageChange = () => {},
+  onPageSizeChange = () => {},
+  pageSize = 25,
   hasDetails,
   onOpenDetails,
   onHideDetails,
@@ -423,11 +431,17 @@ const DataTable = ({
 
   const filteredBaseRows = useMemo(() => {
     if (!showSelectedOnly) return baseRows;
+    if (manualPagination) {
+      const selectedIds = Object.keys(rowSelection || {}).filter(k => rowSelection[k]);
+      return selectedIds
+        .map(id => cacheMap.get(id))
+        .filter(Boolean);
+    }
     return baseRows.filter(row => {
       const rowId = String(row.id);
       return rowSelection && rowSelection[rowId];
     });
-  }, [baseRows, showSelectedOnly, rowSelection]);
+  }, [baseRows, showSelectedOnly, rowSelection, manualPagination, cacheMap]);
 
   const tableData = useMemo(
     () => [...filteredBaseRows, ...pinnedRows],
@@ -547,19 +561,48 @@ const DataTable = ({
     data: tableData || [],
     columns,
     getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-    getPaginationRowModel: getPaginationRowModel(),
+    // manualSorting = true : pas de getSortedRowModel (tri serveur)
+    // manualSorting = false : getSortedRowModel (tri client ES)
+    ...(manualSorting ? {} : { getSortedRowModel: getSortedRowModel() }),
+    manualSorting,
+    // manualPagination = true : pas de getPaginationRowModel (pagination serveur)
+    // manualPagination = false : getPaginationRowModel (pagination client ES)
+    ...(manualPagination ? {} : { getPaginationRowModel: getPaginationRowModel() }),
+    manualPagination,
+    pageCount: manualPagination
+      ? Math.ceil((totalCount || 0) / (pageSize || 25))
+      : undefined,
     onColumnVisibilityChange,
     columnResizeMode: 'onChange',
     meta: {
       rowSelection,
       onRowSelectionChange: handleRowSelectionChange,
     },
+    onSortingChange: updater => {
+      const currentSorting = sorting || [];
+      const next = typeof updater === 'function' ? updater(currentSorting) : updater;
+      onSortingChange(next);
+    },
     state: {
       rowSelection,
       columnVisibility: columnVisibility || {},
       rowPinning: { top: validPinnedIds, bottom: [] },
+      sorting,
+      ...(manualPagination
+        ? { pagination: { pageIndex: page || 0, pageSize: pageSize || 25 } }
+        : {}),
     },
+    ...(manualPagination
+      ? {
+        onPaginationChange: updater => {
+          const next = typeof updater === 'function'
+            ? updater({ pageIndex: page || 0, pageSize: pageSize || 25 })
+            : updater;
+          if (next.pageIndex !== (page || 0)) onPageChange(next.pageIndex);
+          if (next.pageSize !== (pageSize || 25)) onPageSizeChange(next.pageSize);
+        },
+      }
+      : {}),
     enableRowSelection: true,
     getRowCanSelect: () => true,
     enableColumnResizing: true,
@@ -604,6 +647,7 @@ const DataTable = ({
   const paginationState = table.getState().pagination;
 
   useEffect(() => {
+    if (manualPagination) return;
     const maxPageIndex = Math.max(
       Math.ceil(filteredRowCount / paginationState.pageSize) - 1,
       0,
@@ -611,9 +655,16 @@ const DataTable = ({
     if (paginationState.pageIndex > maxPageIndex) {
       table.setPageIndex(maxPageIndex);
     }
-  }, [filteredRowCount, paginationState.pageIndex, paginationState.pageSize, table]);
+  }, [
+    manualPagination,
+    filteredRowCount,
+    paginationState.pageIndex,
+    paginationState.pageSize,
+    table,
+  ]);
 
   useEffect(() => {
+    if (manualPagination) return;
     if (data && data.length > 0 && rowSelection && Object.keys(rowSelection).length > 0) {
       const currentDataIds = new Set(data.map(row => String(row.id)));
       const validSelectedIds = Object.keys(rowSelection).filter(
@@ -634,7 +685,7 @@ const DataTable = ({
         onRowSelectionChange({});
       }
     }
-  }, [data, onRowSelectionChange, rowSelection]);
+  }, [manualPagination, data, onRowSelectionChange, rowSelection]);
 
   if (loading && (!data || data.length === 0)) {
     return (
@@ -644,6 +695,20 @@ const DataTable = ({
     );
   }
 
+  const filteredCount = filteredBaseRows.length;
+  const serverCount = totalCount || 0;
+  const paginationCount = manualPagination && !showSelectedOnly 
+    ? serverCount 
+    : filteredCount;
+    
+  const paginationPage = showSelectedOnly && manualPagination
+    ? 0
+    : table.getState().pagination.pageIndex;
+    
+  const handlePaginationPageChange = showSelectedOnly && manualPagination
+    ? () => {}
+    : (_, newPage) => table.setPageIndex(newPage);
+    
   return (
     <Box
       className="data-table-tanstack"
@@ -794,9 +859,9 @@ const DataTable = ({
       </TableContainer>
       <TablePagination
         component="div"
-        count={filteredBaseRows.length}
-        page={table.getState().pagination.pageIndex}
-        onPageChange={(_, page) => table.setPageIndex(page)}
+        count={paginationCount}
+        page={paginationPage}
+        onPageChange={handlePaginationPageChange}
         rowsPerPage={table.getState().pagination.pageSize}
         onRowsPerPageChange={e => table.setPageSize(Number(e.target.value))}
         rowsPerPageOptions={[10, 25, 50, 100]}
@@ -848,6 +913,19 @@ DataTable.propTypes = {
   rowCache: PropTypes.instanceOf(Map),
   columnVisibility: PropTypes.objectOf(PropTypes.bool),
   onColumnVisibilityChange: PropTypes.func,
+  manualPagination: PropTypes.bool,
+  totalCount: PropTypes.number,
+  page: PropTypes.number,
+  onPageChange: PropTypes.func,
+  onPageSizeChange: PropTypes.func,
+  manualSorting: PropTypes.bool,
+  sorting: PropTypes.arrayOf(
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      desc: PropTypes.bool,
+    }),
+  ),
+  onSortingChange: PropTypes.func,
 };
 
 DataTable.defaultProps = {
@@ -862,8 +940,16 @@ DataTable.defaultProps = {
   onHideDetails: () => {},
   details: null,
   rowCache: null,
+  manualPagination: false,
+  totalCount: undefined,
+  page: undefined,
+  onPageChange: () => {},
+  onPageSizeChange: () => {},
   columnVisibility: {},
   onColumnVisibilityChange: () => {},
+  manualSorting: false,
+  sorting: [],
+  onSortingChange: () => {},
 };
 
 export default DataTable;
