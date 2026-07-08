@@ -1,10 +1,14 @@
 import Api from '@terralego/core/modules/Api';
+import { getExtent } from '@terralego/core/modules/Visualizer/services/search';
+
+export { getExtent };
 
 const unfilteredTotalCache = {};
 
 export const fetchTableDataGeoAPI = async ({
   layer,
   fields,
+  form,
   page = 0,
   pageSize = 25,
   query,
@@ -34,9 +38,22 @@ export const fetchTableDataGeoAPI = async ({
     params.set('ordering', sort);
   }
 
+  const formMap = {};
+  if (form) {
+    form.forEach(entry => {
+      if (entry?.property) {
+        formMap[entry.property] = entry;
+      }
+    });
+  }
+
   Object.entries(filters).forEach(([key, value]) => {
     if (value == null || value === '' || (Array.isArray(value) && value.length === 0)) return;
-    if (Array.isArray(value)) {
+
+    const formEntry = formMap[key];
+    if (formEntry?.type === 'range' && Array.isArray(value) && value.length === 2) {
+      params.set(key, `${value[0]}-${value[1]}`);
+    } else if (Array.isArray(value)) {
       params.set(key, value.join(','));
     } else {
       params.set(key, String(value));

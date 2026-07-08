@@ -4,13 +4,8 @@ import classnames from 'classnames';
 import { createPortal } from 'react-dom';
 import { Box } from '@mui/material';
 
-import bbox from '@turf/bbox';
-
-import { extractColumns, prepareData, exportSpreadsheet } from './dataUtils';
-import { fetchTableData, fetchGeometriesByIds, getExtent } from './tableService';
-
-import { fetchTableDataGeoAPI, fetchExtentByIds } from './tableServiceGeoAPI';
-import { extractColumnsGeoAPI, prepareDataGeoAPI } from './dataUtilsGeoAPI';
+import { fetchTableDataGeoAPI, fetchExtentByIds, getExtent } from './tableServiceGeoAPI';
+import { extractColumnsGeoAPI, prepareDataGeoAPI, exportSpreadsheet } from './dataUtilsGeoAPI';
 
 import HeaderMui from './HeaderMui';
 import DataTable from '../DataTable';
@@ -22,14 +17,6 @@ import './styles.scss';
 const TABLE_HEIGHT_DEFAULT = 33;
 const TABLE_HEIGHT_MIN = 20;
 const TABLE_HEIGHT_MAX = 90;
-
-const USE_GEO_API = true; // false = ES
-
-const currentFetchTableData = USE_GEO_API ? fetchTableDataGeoAPI : fetchTableData;
-const currentExtractColumns = USE_GEO_API ? extractColumnsGeoAPI : extractColumns;
-const currentPrepareData = USE_GEO_API ? prepareDataGeoAPI : prepareData;
-
-const getFeatureId = feature => (USE_GEO_API ? feature?.identifier : feature?._id);
 
 const TABLE_INITIAL_STATE = {
   columns: [],
@@ -94,6 +81,7 @@ const DataTableMui = ({
   const [mapBoundsKey, setMapBoundsKey] = useState('');
   const previousLayerIdRef = React.useRef();
   const previousRowsByIdRef = React.useRef(new Map());
+  const [cacheVersion, setCacheVersion] = useState(0);
 
   const rowCacheMemo = useMemo(() => {
     const cache = new Map(previousRowsByIdRef.current);
@@ -103,7 +91,7 @@ const DataTableMui = ({
       }
     });
     return cache;
-  }, [rows]);
+  }, [rows, cacheVersion]);
 
   const { rowSelection, setRowSelection, selectedFeatures, clearSelection, setActiveLayer } =
     useTableSelection();
@@ -141,7 +129,7 @@ const DataTableMui = ({
 
     return data.map((row, rowIndex) => {
       const hit = hits?.[rowIndex];
-      const id = getFeatureId(hit) || `row_${rowIndex}`;
+      const id = hit?.identifier || `row_${rowIndex}`;
       const rowObj = {
         id,
       };
@@ -168,12 +156,12 @@ const DataTableMui = ({
       ? getExtent(map, currentVisibleBoundingBox)
       : undefined;
 
-    const sortParam = USE_GEO_API && sorting[0]
+    const sortParam = sorting[0]
       ? `${sorting[0].desc ? '-' : ''}${sorting[0].id}`
       : undefined;
 
     try {
-      const { hits, total, unfilteredTotal } = await currentFetchTableData({
+      const { hits, total, unfilteredTotal } = await fetchTableDataGeoAPI({
         layer,
         fields,
         form,
@@ -186,8 +174,8 @@ const DataTableMui = ({
         sort: sortParam,
       });
 
-      const extractedColumns = currentExtractColumns(fields, hits);
-      const preparedData = currentPrepareData(extractedColumns, hits);
+      const extractedColumns = extractColumnsGeoAPI(fields, hits);
+      const preparedData = prepareDataGeoAPI(extractedColumns, hits);
       const newRows = transformData(extractedColumns, preparedData, hits);
 
       dispatch({
@@ -246,11 +234,8 @@ const DataTableMui = ({
     const filtersChanged = prev.filtersKey !== filtersKey;
     // En mode ES, page/pageSize ne changent jamais donc paginationChanged = false
     // En mode geo-api, DataTable appelle setPage/setPageSize donc refetch
-    const paginationChanged = USE_GEO_API
-      && (prev.page !== page || prev.pageSize !== pageSize);
-    
-    const sortingChanged = USE_GEO_API
-      && JSON.stringify(prev.sorting) !== JSON.stringify(sorting);
+    const paginationChanged = prev.page !== page || prev.pageSize !== pageSize;
+    const sortingChanged = JSON.stringify(prev.sorting) !== JSON.stringify(sorting);
 
     const shouldRefetch =
       layerChanged || queryChanged || extentChanged || bboxChanged || filtersChanged
@@ -283,7 +268,6 @@ const DataTableMui = ({
   ]);
 
   useEffect(() => {
-    if (!USE_GEO_API) return;
     const newCache = { ...featuresCacheRef.current };
     const selectedIds = Object.keys(rowSelection || {}).filter(k => rowSelection[k]);
 
@@ -334,6 +318,8 @@ const DataTableMui = ({
       setRowSelection({});
       setColumnVisibility({});
       setSorting([]);
+      setPage(0);
+      setPageSize(25);
       previousRowsByIdRef.current = new Map();
     }
     previousLayerIdRef.current = layerId;
@@ -367,8 +353,6 @@ const DataTableMui = ({
     setTimeout(() => setIsResizing(false), 300);
   };
 
-  const selectedFeaturesMemo = useMemo(() => selectedFeatures, [selectedFeatures]);
-
   const handleColumnChange = ({ event, index }) => {
     const { checked } = event.target;
     const colId = columns[index]?.value;
@@ -392,10 +376,9 @@ const DataTableMui = ({
     }, []);
 
     const columnLabels = columns.map(({ value, label = value }) => label);
-    const preparedData = currentPrepareData(columns, features);
+    const preparedData = prepareDataGeoAPI(columns, features);
     const data = [columnLabels, ...preparedData].map(dataLine =>
-      exportableColumnIndexes.map(index => dataLine[index]),
-    );
+      exportableColumnIndexes.map(index => dataLine[index]));
 
     exportSpreadsheet({
       name,
@@ -443,85 +426,36 @@ const DataTableMui = ({
   const handleZoomToSelection = useCallback(async selectedFeaturesList => {
     if (!displayedLayer || !map || selectedFeaturesList.length === 0) return;
 
-    const { filters: { layer: esIndex } = {}, baseEsQuery } = displayedLayer;
-
-    // getFeatureId : ES : _id, geo-api : identifier
-    const ids = selectedFeaturesList.map(f => getFeatureId(f));
+    const { filters: { layer: esIndex } = {} } = displayedLayer;
+    const ids = selectedFeaturesList.map(f => f?.identifier);
 
     try {
-      if (USE_GEO_API) {
-        // geo-api : fetchExtentByIds retourne directement le bbox
-        // Pas besoin de @turf/bbox ni de featureCollection
-        const extentBbox = await fetchExtentByIds({ layer: esIndex, ids });
-        if (!extentBbox) return;
+      const extentBbox = await fetchExtentByIds({ layer: esIndex, ids });
+      if (!extentBbox) return;
 
-        // bbox = [xmin, ymin, xmax, ymax] (même format que turf.bbox)
-        const mapContainer = map.getContainer();
-        const mapRect = mapContainer.getBoundingClientRect();
-        const mapWidth = mapContainer.offsetWidth;
-        const mapHeight = mapContainer.offsetHeight;
+      const mapContainer = map.getContainer();
+      const mapRect = mapContainer.getBoundingClientRect();
+      const mapWidth = mapContainer.offsetWidth;
+      const mapHeight = mapContainer.offsetHeight;
 
-        let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
-        if (visibleBoundingBox) {
-          const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
-          const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
-          const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
-          const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
-          fitPadding = {
-            top: visibleTop + 20,
-            left: visibleLeft + 20,
-            right: mapWidth - visibleRight + 20,
-            bottom: mapHeight - visibleBottom + 20,
-          };
-        }
-
-        map.fitBounds(
-          [[extentBbox[0], extentBbox[1]], [extentBbox[2], extentBbox[3]]],
-          { padding: fitPadding, maxZoom: 18 },
-        );
-      } else {
-        // ES : comportement existant (fetchGeometriesByIds + @turf/bbox)
-        const geometries = await fetchGeometriesByIds({
-          layer: esIndex,
-          ids,
-          baseEsQuery,
-        });
-        if (geometries.length === 0) return;
-
-        const featureCollection = {
-          type: 'FeatureCollection',
-          features: geometries.map(geom => ({
-            type: 'Feature',
-            geometry: geom,
-            properties: {},
-          })),
+      let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
+      if (visibleBoundingBox) {
+        const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
+        const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
+        const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
+        const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
+        fitPadding = {
+          top: visibleTop + 20,
+          left: visibleLeft + 20,
+          right: mapWidth - visibleRight + 20,
+          bottom: mapHeight - visibleBottom + 20,
         };
-        const bounds = bbox(featureCollection);
-
-        const mapContainer = map.getContainer();
-        const mapRect = mapContainer.getBoundingClientRect();
-        const mapWidth = mapContainer.offsetWidth;
-        const mapHeight = mapContainer.offsetHeight;
-
-        let fitPadding = { top: 50, bottom: 50, left: 50, right: 50 };
-        if (visibleBoundingBox) {
-          const visibleLeft = Math.max(0, visibleBoundingBox.left - mapRect.left);
-          const visibleTop = Math.max(0, visibleBoundingBox.top - mapRect.top);
-          const visibleRight = Math.min(mapWidth, visibleBoundingBox.right - mapRect.left);
-          const visibleBottom = Math.min(mapHeight, visibleBoundingBox.bottom - mapRect.top);
-          fitPadding = {
-            top: visibleTop + 20,
-            left: visibleLeft + 20,
-            right: mapWidth - visibleRight + 20,
-            bottom: mapHeight - visibleBottom + 20,
-          };
-        }
-
-        map.fitBounds(
-          [[bounds[0], bounds[1]], [bounds[2], bounds[3]]],
-          { padding: fitPadding, maxZoom: 18 },
-        );
       }
+
+      map.fitBounds(
+        [[extentBbox[0], extentBbox[1]], [extentBbox[2], extentBbox[3]]],
+        { padding: fitPadding, maxZoom: 18 },
+      );
     } catch (error) {
       console.error('Error fetching extent for zoom:', error);
     }
@@ -634,75 +568,71 @@ const DataTableMui = ({
       return;
     }
 
-    if (USE_GEO_API) {
-      let feature = features.find(f => f.identifier === featureId)
-        || featuresCacheRef.current[featureId];
+    let feature = features.find(f => f.identifier === featureId)
+      || featuresCacheRef.current[featureId];
+    if (!feature) {
+      try {
+        const { fetchFeatureGeoAPI } = await import('./tableServiceGeoAPI');
+        const { layer } = displayedLayer.filters;
+        feature = await fetchFeatureGeoAPI({ layer, identifier: featureId });
+        featuresCacheRef.current[featureId] = feature;
+      } catch (e) {
+        console.warn(`Feature with ID ${featureId} not found (fetch fallback failed)`);
+        return;
+      }
+    }
+
+    const mapboxFeature = {
+      type: 'Feature',
+      properties: {
+        ...feature.properties,
+        _id: featureId,
+      },
+      geometry: null,
+      layer: {
+        id: mapboxLayerId,
+        source: mapLayer.source,
+      },
+      source: mapLayer.source,
+      sourceLayer: mapLayer.sourceLayer,
+    };
+
+    detailsFunction.fn({
+      feature: mapboxFeature,
+      map,
+      event: {},
+      layerId: mapboxLayerId,
+      instance: interactiveMapInstance,
+    });
+  }, [detailsFunction, features, map, displayedLayer, interactiveMapInstance]);
+
+  useEffect(() => {
+    const featureId = details?.feature?.properties?._id;
+    if (!featureId || details?.layerTreeId !== displayedLayer?.id) return;
+    if (previousRowsByIdRef.current.has(String(featureId))) return;
+
+    const injectRow = async () => {
+      let feature = featuresCacheRef.current[featureId];
       if (!feature) {
         try {
           const { fetchFeatureGeoAPI } = await import('./tableServiceGeoAPI');
-          const { layer } = displayedLayer.filters;
-          feature = await fetchFeatureGeoAPI({ layer, identifier: featureId });
+          const layerName = displayedLayer.filters?.layer;
+          if (!layerName) return;
+          feature = await fetchFeatureGeoAPI({ layer: layerName, identifier: featureId });
           featuresCacheRef.current[featureId] = feature;
-        } catch (e) {
-          console.warn(`Feature with ID ${featureId} not found (fetch fallback failed)`);
+        } catch {
           return;
         }
       }
-
-      const mapboxFeature = {
-        type: 'Feature',
-        properties: {
-          ...feature.properties,
-          _id: featureId, // conservé pour compatibilité avec DetailPanel
-        },
-        geometry: null, // FeatureListSerializer n'inclut pas geom
-        layer: {
-          id: mapboxLayerId,
-          source: mapLayer.source,
-        },
-        source: mapLayer.source,
-        sourceLayer: mapLayer.sourceLayer,
-      };
-
-      detailsFunction.fn({
-        feature: mapboxFeature,
-        map,
-        event: {},
-        layerId: mapboxLayerId,
-        instance: interactiveMapInstance,
-      });
-    } else {
-      // ES : comportement existant inchangé
-      const esFeature = features.find(f => f._id === featureId);
-      if (!esFeature) {
-        console.warn(`Feature with ID ${featureId} not found`);
-        return;
+      const rowData = prepareDataGeoAPI(columns, [feature]);
+      const newRows = transformData(columns, rowData, [feature]);
+      if (newRows[0]) {
+        previousRowsByIdRef.current.set(String(featureId), newRows[0]);
+        setCacheVersion(v => v + 1);
       }
-
-      const mapboxFeature = {
-        type: 'Feature',
-        properties: {
-          ...esFeature._source,
-          _id: featureId,
-        },
-        geometry: esFeature._source?.geom || null,
-        layer: {
-          id: mapboxLayerId,
-          source: mapLayer.source,
-        },
-        source: mapLayer.source,
-        sourceLayer: mapLayer.sourceLayer,
-      };
-
-      detailsFunction.fn({
-        feature: mapboxFeature,
-        map,
-        event: {},
-        layerId: mapboxLayerId,
-        instance: interactiveMapInstance,
-      });
-    }
-  }, [detailsFunction, features, map, displayedLayer, interactiveMapInstance]);
+    };
+    injectRow();
+  }, [details, displayedLayer, columns, featuresCacheRef]);
 
   const columnsWithDisplay = useMemo(
     () =>
@@ -778,7 +708,7 @@ const DataTableMui = ({
                 extent={extent}
                 layer={layer}
                 compare={compare}
-                selectedFeatures={selectedFeaturesMemo}
+                selectedFeatures={selectedFeatures}
                 clearSelection={clearSelection}
                 loading={loading}
                 title={title || label}
@@ -808,17 +738,16 @@ const DataTableMui = ({
                   onRowSelectionChange={setRowSelection}
                   onOpenDetails={openFeatureDetails}
                   onHideDetails={hideDetails}
-                  pageSize={USE_GEO_API ? pageSize : 25}
+                  pageSize={pageSize}
                   rowCache={rowCacheMemo}
-                  // Props pagination serveur (ignorées par DataTable si manualPagination = false)
-                  manualPagination={USE_GEO_API}
-                  totalCount={USE_GEO_API ? resultsTotal : undefined}
-                  page={USE_GEO_API ? page : undefined}
-                  onPageChange={USE_GEO_API ? setPage : undefined}
-                  onPageSizeChange={USE_GEO_API ? setPageSize : undefined}
-                  manualSorting={USE_GEO_API}
-                  sorting={USE_GEO_API ? sorting : undefined}
-                  onSortingChange={USE_GEO_API ? setSorting : undefined}
+                  manualPagination
+                  totalCount={resultsTotal}
+                  page={page}
+                  onPageChange={setPage}
+                  onPageSizeChange={setPageSize}
+                  manualSorting
+                  sorting={sorting}
+                  onSortingChange={setSorting}
                 />
               </Box>
             </>

@@ -374,6 +374,10 @@ const DataTable = ({
   onColumnVisibilityChange,
 }) => {
   const [showSelectedOnly, setShowSelectedOnly] = React.useState(false);
+  const [localSorting, setLocalSorting] = React.useState([]);
+
+  const isSelectionOnly = showSelectedOnly && manualPagination;
+  const effectiveSorting = isSelectionOnly ? localSorting : sorting;
 
   const rowSelectionRef = React.useRef(rowSelection);
   React.useEffect(() => {
@@ -391,6 +395,12 @@ const DataTable = ({
       setShowSelectedOnly(false);
     }
   }, [rowSelection, showSelectedOnly]);
+
+  useEffect(() => {
+    if (!isSelectionOnly) {
+      setLocalSorting([]);
+    }
+  }, [isSelectionOnly]);
 
   const baseRows = useMemo(() => data || [], [data]);
   const cacheMap = useMemo(() => rowCache || new Map(), [rowCache]);
@@ -433,15 +443,29 @@ const DataTable = ({
     if (!showSelectedOnly) return baseRows;
     if (manualPagination) {
       const selectedIds = Object.keys(rowSelection || {}).filter(k => rowSelection[k]);
-      return selectedIds
+      const rows = selectedIds
         .map(id => cacheMap.get(id))
         .filter(Boolean);
+      if (effectiveSorting?.[0]) {
+        const { id: colId, desc } = effectiveSorting[0];
+        rows.sort((a, b) => {
+          const va = a[colId];
+          const vb = b[colId];
+          if (va == null) return 1;
+          if (vb == null) return -1;
+          const cmp = typeof va === 'number'
+            ? va - vb
+            : String(va).localeCompare(String(vb), undefined, { numeric: true });
+          return desc ? -cmp : cmp;
+        });
+      }
+      return rows;
     }
     return baseRows.filter(row => {
       const rowId = String(row.id);
       return rowSelection && rowSelection[rowId];
     });
-  }, [baseRows, showSelectedOnly, rowSelection, manualPagination, cacheMap]);
+  }, [baseRows, showSelectedOnly, rowSelection, manualPagination, cacheMap, effectiveSorting]);
 
   const tableData = useMemo(
     () => [...filteredBaseRows, ...pinnedRows],
@@ -579,15 +603,19 @@ const DataTable = ({
       onRowSelectionChange: handleRowSelectionChange,
     },
     onSortingChange: updater => {
-      const currentSorting = sorting || [];
+      const currentSorting = effectiveSorting || [];
       const next = typeof updater === 'function' ? updater(currentSorting) : updater;
+      if (isSelectionOnly) {
+        setLocalSorting(next);
+        return;
+      }
       onSortingChange(next);
     },
     state: {
       rowSelection,
       columnVisibility: columnVisibility || {},
       rowPinning: { top: validPinnedIds, bottom: [] },
-      sorting,
+      sorting: effectiveSorting,
       ...(manualPagination
         ? { pagination: { pageIndex: page || 0, pageSize: pageSize || 25 } }
         : {}),
@@ -697,18 +725,18 @@ const DataTable = ({
 
   const filteredCount = filteredBaseRows.length;
   const serverCount = totalCount || 0;
-  const paginationCount = manualPagination && !showSelectedOnly 
-    ? serverCount 
+  const paginationCount = manualPagination && !showSelectedOnly
+    ? serverCount
     : filteredCount;
-    
+
   const paginationPage = showSelectedOnly && manualPagination
     ? 0
     : table.getState().pagination.pageIndex;
-    
+
   const handlePaginationPageChange = showSelectedOnly && manualPagination
     ? () => {}
     : (_, newPage) => table.setPageIndex(newPage);
-    
+
   return (
     <Box
       className="data-table-tanstack"
@@ -716,101 +744,102 @@ const DataTable = ({
       variant="outlined"
       sx={{ height: 'calc(100% - 15px)', display: 'flex', mx: 1, flexDirection: 'column' }}
     >
-      <TableContainer component={Paper} sx={{ flex: 1, borderRadius: 0, overflow: 'auto' }}>
-        <Table size="small" stickyHeader sx={{ tableLayout: 'fixed', ...columnSizeVars }}>
-          <TableHead>
-            {table.getHeaderGroups().map(headerGroup => (
-              <TableRow key={headerGroup.id}>
-                {headerGroup.headers.map((header, headerIndex) => {
-                  const isFirstColumn = headerIndex === 0;
-                  const isSecondColumn = headerIndex === 1;
-                  const isSticky = hasDetails ? isFirstColumn || isSecondColumn : isFirstColumn;
-                  let headerLeft = 'auto';
-                  if (isFirstColumn) {
-                    headerLeft = 0;
-                  } else if (isSecondColumn && hasDetails) {
-                    headerLeft = '32px';
-                  }
+      <Box sx={{ position: 'relative', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <TableContainer component={Paper} sx={{ flex: 1, borderRadius: 0, overflow: 'auto' }}>
+          <Table size="small" stickyHeader sx={{ tableLayout: 'fixed', ...columnSizeVars }}>
+            <TableHead>
+              {table.getHeaderGroups().map(headerGroup => (
+                <TableRow key={headerGroup.id}>
+                  {headerGroup.headers.map((header, headerIndex) => {
+                    const isFirstColumn = headerIndex === 0;
+                    const isSecondColumn = headerIndex === 1;
+                    const isSticky = hasDetails ? isFirstColumn || isSecondColumn : isFirstColumn;
+                    let headerLeft = 'auto';
+                    if (isFirstColumn) {
+                      headerLeft = 0;
+                    } else if (isSecondColumn && hasDetails) {
+                      headerLeft = '32px';
+                    }
 
-                  const renderHeaderContent = () => {
-                    if (header.isPlaceholder) return null;
-                    if (header.column.id === 'select') {
-                      return flexRender(header.column.columnDef.header, header.getContext());
-                    }
-                    if (header.column.id === 'minifiche') {
-                      return <Box sx={{ minHeight: '20px' }} />;
-                    }
+                    const renderHeaderContent = () => {
+                      if (header.isPlaceholder) return null;
+                      if (header.column.id === 'select') {
+                        return flexRender(header.column.columnDef.header, header.getContext());
+                      }
+                      if (header.column.id === 'minifiche') {
+                        return <Box sx={{ minHeight: '20px' }} />;
+                      }
+
+                      return (
+                        <Tooltip
+                          title={String(header.column.columnDef.header)}
+                          enterDelay={500}
+                          disableInteractive
+                        >
+                          <Box
+                            sx={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              overflow: 'hidden',
+                              minHeight: '20px',
+                            }}
+                          >
+                            {header.column.getCanSort() ? (
+                              <TableSortLabel
+                                active={!!header.column.getIsSorted()}
+                                direction={header.column.getIsSorted() || 'asc'}
+                                onClick={header.column.getToggleSortingHandler()}
+                                sx={{
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  width: '100%',
+                                  '& .MuiTableSortLabel-icon': {
+                                    fontSize: '0.875rem',
+                                    marginLeft: '2px',
+                                  },
+                                }}
+                              >
+                                {flexRender(header.column.columnDef.header, header.getContext())}
+                              </TableSortLabel>
+                            ) : (
+                              <Box
+                                sx={{
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {flexRender(header.column.columnDef.header, header.getContext())}
+                              </Box>
+                            )}
+                          </Box>
+                        </Tooltip>
+                      );
+                    };
 
                     return (
-                      <Tooltip
-                        title={String(header.column.columnDef.header)}
-                        enterDelay={500}
-                        disableInteractive
+                      <TableCell
+                        key={header.id}
+                        sx={{
+                          width: `calc(var(--header-${headerIndex}-size) * 1px)`,
+                          position: 'sticky',
+                          top: 0,
+                          left: headerLeft,
+                          zIndex: isSticky ? 4 : 3,
+                          padding: isFirstColumn ? 0 : '2px 4px',
+                          fontSize: '0.75rem',
+                          fontWeight: 600,
+                          borderRight: '1px solid rgba(224, 224, 224, 1)',
+                          borderBottom: '1px solid rgba(224, 224, 224, 1)',
+                          backgroundColor: '#f5f5f5',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          lineHeight: 1.2,
+                        }}
                       >
-                        <Box
-                          sx={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            overflow: 'hidden',
-                            minHeight: '20px',
-                          }}
-                        >
-                          {header.column.getCanSort() ? (
-                            <TableSortLabel
-                              active={!!header.column.getIsSorted()}
-                              direction={header.column.getIsSorted() || 'asc'}
-                              onClick={header.column.getToggleSortingHandler()}
-                              sx={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                width: '100%',
-                                '& .MuiTableSortLabel-icon': {
-                                  fontSize: '0.875rem',
-                                  marginLeft: '2px',
-                                },
-                              }}
-                            >
-                              {flexRender(header.column.columnDef.header, header.getContext())}
-                            </TableSortLabel>
-                          ) : (
-                            <Box
-                              sx={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {flexRender(header.column.columnDef.header, header.getContext())}
-                            </Box>
-                          )}
-                        </Box>
-                      </Tooltip>
-                    );
-                  };
-
-                  return (
-                    <TableCell
-                      key={header.id}
-                      sx={{
-                        width: `calc(var(--header-${headerIndex}-size) * 1px)`,
-                        position: 'sticky',
-                        top: 0,
-                        left: headerLeft,
-                        zIndex: isSticky ? 4 : 3,
-                        padding: isFirstColumn ? 0 : '2px 4px',
-                        fontSize: '0.75rem',
-                        fontWeight: 600,
-                        borderRight: '1px solid rgba(224, 224, 224, 1)',
-                        borderBottom: '1px solid rgba(224, 224, 224, 1)',
-                        backgroundColor: '#f5f5f5',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        lineHeight: 1.2,
-                      }}
-                    >
-                      {renderHeaderContent()}
-                      {header.column.getCanResize() && (
+                        {renderHeaderContent()}
+                        {header.column.getCanResize() && (
                         <Box
                           onMouseDown={header.getResizeHandler()}
                           onTouchStart={header.getResizeHandler()}
@@ -833,30 +862,41 @@ const DataTable = ({
                             }),
                           }}
                         />
-                      )}
-                    </TableCell>
-                  );
-                })}
-              </TableRow>
-            ))}
-          </TableHead>
-          {table.getState().columnSizingInfo.isResizingColumn ? (
-            <MemoTableBodyContent
-              table={table}
-              hasDetails={hasDetails}
-              rowSelection={rowSelection}
-              columnVisibility={columnVisibility}
-            />
-          ) : (
-            <TableBodyContent
-              table={table}
-              hasDetails={hasDetails}
-              rowSelection={rowSelection}
-              columnVisibility={columnVisibility}
-            />
-          )}
-        </Table>
-      </TableContainer>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              ))}
+            </TableHead>
+            {table.getState().columnSizingInfo.isResizingColumn ? (
+              <MemoTableBodyContent
+                table={table}
+                hasDetails={hasDetails}
+                rowSelection={rowSelection}
+                columnVisibility={columnVisibility}
+              />
+            ) : (
+              <TableBodyContent
+                table={table}
+                hasDetails={hasDetails}
+                rowSelection={rowSelection}
+                columnVisibility={columnVisibility}
+              />
+            )}
+          </Table>
+        </TableContainer>
+        {loading && data && data.length > 0 && (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              backgroundColor: 'rgba(255, 255, 255, 0.55)',
+              zIndex: 10,
+            }}
+          />
+        )}
+      </Box>
       <TablePagination
         component="div"
         count={paginationCount}
