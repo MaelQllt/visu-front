@@ -60,8 +60,6 @@ import React from 'react';
 import { withRouter } from 'react-router-dom';
 
 import Api from '@terralego/core/modules/Api';
-import searchInMap from './search';
-import searchInMapGeoAPI from './searchGeoAPI';
 
 import { connectSettings } from '../../Main/Provider/context';
 import {
