@@ -64,6 +64,11 @@ import searchInMap from './search';
 import searchInMapGeoAPI from './searchGeoAPI';
 
 import { connectSettings } from '../../Main/Provider/context';
+import {
+  addCustomIconToMap,
+  getCustomIcons,
+  isCustomIconId,
+} from '../../../services/customIcons';
 
 import BoundingBoxObserver from '../../../components/BoundingBoxObserver';
 import DeclarationWrapper from '../../../components/DeclarationModule/DeclarationWrapper';
@@ -71,6 +76,12 @@ import ReportingModule from '../../../components/ReportingModule/ReportingModule
 import TableConnected from './Table';
 import Widgets from './Widgets';
 import { generateClusterList } from './interactions';
+import {
+  buildSearchControl,
+  getSearchableLayers,
+  getSearchAvailability,
+  selectSearchResult,
+} from './Search';
 import ShareWrapper from '../../../components/ShareModule/ShareWrapper';
 import { TableSelectionProvider } from '../../../contexts/TableSelectionContext';
 import { useTableSelectionHighlight } from '../../../hooks/useTableSelectionHighlight';
@@ -269,6 +280,13 @@ export class Visualizer extends React.Component {
     }
   }
 
+  get customIcons() {
+    const { view } = this.props;
+    const customStyleLayers =
+      (view && view.map && view.map.customStyle && view.map.customStyle.layers) || [];
+    return getCustomIcons(customStyleLayers);
+  }
+
   get legends() {
     const { layersTreeState, view } = this.props;
     const { legends } = this.state;
@@ -338,9 +356,7 @@ export class Visualizer extends React.Component {
 
   get activeAndSearchableLayers() {
     const { layersTreeState } = this.props;
-    return filterLayersStatesFromLayersState(layersTreeState, ({ active }) => !!active).filter(
-      ([{ filters: { layer, mainField } = {} }]) => layer && mainField,
-    );
+    return getSearchableLayers(layersTreeState);
   }
 
   setInteractions() {
@@ -493,6 +509,12 @@ export class Visualizer extends React.Component {
     map.on('click', onMapClick);
     map.on('load', () => this.updateLayersTree());
     map.on('styleimagemissing', ({ id }) => {
+      if (isCustomIconId(id)) {
+        const icon = this.customIcons[id];
+        if (icon) addCustomIconToMap(map, id, icon);
+        return;
+      }
+
       const { view: { styleImages = [] } = {} } = this.props;
       const foundImage = styleImages.find(({ slug }) => slug === id);
 
@@ -898,67 +920,13 @@ export class Visualizer extends React.Component {
     this.setState({ printIsOpened });
   };
 
-
-  
-
-  searchResultClick = async ({
-    result,
-    result: { label, layers, id },
-    map,
-    focusOnSearchResult,
-    setQuery,
-  }) => {
-    setQuery(label);
-    this.hideDetails();
-
-    // Zoom : extent depuis geo-api si dispo
-    if (result.layerName && id) {
-      try {
-        const url = `${Api.host}/geo-api/${result.layerName}/feature/extent/?identifier=${id}`;
-        const data = await fetch(url).then(r => r.json());
-        if (data.bbox) {
-          focusOnSearchResult({ bounds: data.bbox });
-        }
-      } catch (e) { /* silence */ }
-    } else if (result.bounds || result.center) {
-      focusOnSearchResult(result);
-    }
-
-    if (!layers) return;
-
-    const { interactions, interactiveMapInstance } = this.state;
-    const interaction = interactions.find(
-      ({ id: iId, trigger = 'click' }) => layers.includes(iId) && trigger === 'click',
-    );
-    if (!interaction) return;
-
-    const mapLayer = map.getLayer(interaction.id);
-    if (!mapLayer) return;
-
-    const mapboxFeature = {
-      type: 'Feature',
-      properties: {
-        _id: result._feature_id || id,
-      },
-      geometry: result.geom || null,
-      layer: {
-        id: mapLayer.id,
-        source: mapLayer.source,
-      },
-      source: mapLayer.source,
-      sourceLayer: mapLayer.sourceLayer,
-    };
-
-    interaction.fn({
-      feature: mapboxFeature,
-      map,
-      event: {},
-      layerId: mapLayer.id,
-      instance: interactiveMapInstance,
+  searchResultClick = params =>
+    selectSearchResult({
+      ...params,
+      interactions: this.state.interactions,
+      interactiveMapInstance: this.state.interactiveMapInstance,
+      hideDetails: this.hideDetails,
     });
-
-    map.fire('updateMap');
-  };
 
   updateLayersTreeState = layersTreeState => {
     const { setLayersTreeState } = this.props;
@@ -1239,14 +1207,18 @@ export class Visualizer extends React.Component {
     );
     const { features: featuresForDetail = [] } = isDetailsVisible ? currentFeatureList || {} : [];
 
-    const displaySearchInMap = Array.from(layersTreeState.keys()).some(
-      ({ filters: { mainField } = {} }) => mainField,
-    );
+    const { display: displaySearchInMap, disabled: disableSearch } = getSearchAvailability({
+      layersTreeState,
+      layersEnable,
+      locationsEnable,
+      searchProvider,
+      activeLayers: activeAndSearchableLayers,
+    });
 
     const controls = getControls(
       displaySearchInMap,
       Array.isArray(mapProps.backgroundStyle),
-      !activeAndSearchableLayers.length,
+      disableSearch,
       isMobileSized,
       this.onPrintToggle,
       viewState,
@@ -1255,38 +1227,18 @@ export class Visualizer extends React.Component {
     );
 
     if (displaySearchInMap) {
-      const search = controls.find(({ control }) => control === CONTROL_SEARCH);
-      // // ES search (décommenter pour comparer)
-      // search.onSearch = searchInMap({
-      //   language,
-      //   searchProvider,
-      //   locationsEnable,
-      //   layersEnable,
-      //   translate: t,
-      //   layers: activeAndSearchableLayers,
-      // });
-      if (USE_GEO_API) {
-        // geo-api
-        search.onSearch = searchInMapGeoAPI({
+      Object.assign(
+        controls.find(({ control }) => control === CONTROL_SEARCH),
+        buildSearchControl({
           language,
           searchProvider,
           locationsEnable,
           layersEnable,
           translate: t,
           layers: activeAndSearchableLayers,
-        });
-      } else {
-        // ES
-        search.onSearch = searchInMap({
-          language,
-          searchProvider,
-          locationsEnable,
-          layersEnable,
-          translate: t,
-          layers: activeAndSearchableLayers,
-        });
-      }
-      search.onSearchResultClick = this.searchResultClick;
+          onResultClick: this.searchResultClick,
+        }),
+      );
     }
 
     const isTableVisible = hasTable(layersTreeState);

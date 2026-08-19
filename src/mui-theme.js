@@ -1,9 +1,32 @@
-import { createTheme } from '@mui/material';
+import { experimental_extendTheme as extendTheme } from '@mui/material';
 
+const WHITE = '#FFFFFF';
 const PRIMARY = '#1C4984';
 const SECONDARY = '#EF7720';
+const CONTRASTED = PRIMARY;
 
-const theme = createTheme({
+const rgbChannel = hex =>
+  [1, 3, 5].map(index => parseInt(hex.slice(index, index + 2), 16)).join(' ');
+
+const cssVar = (name, fallback) => `var(--${name}, ${fallback})`;
+
+const overridable = (name, fallback) => {
+  const color = cssVar(name, fallback);
+  const channel = cssVar(`${name}-channel`, rgbChannel(fallback));
+
+  return {
+    main: color,
+    light: color,
+    dark: color,
+    mainChannel: channel,
+    lightChannel: channel,
+    darkChannel: channel,
+    contrastText: cssVar(`${name}-contrast-text`, WHITE),
+    contrastTextChannel: cssVar(`${name}-contrast-text-channel`, rgbChannel(WHITE)),
+  };
+};
+
+const theme = extendTheme({
   typography: {
     button: {
       textTransform: 'unset',
@@ -13,13 +36,13 @@ const theme = createTheme({
   shape: {
     borderRadius: 10,
   },
-  palette: {
-    primary: {
-      main: PRIMARY,
-    },
-    secondary: {
-      main: SECONDARY,
-      contrastText: '#FFFFFF',
+  colorSchemes: {
+    light: {
+      palette: {
+        primary: overridable('primary', PRIMARY),
+        secondary: overridable('secondary', SECONDARY),
+        contrasted: overridable('contrasted', CONTRASTED),
+      },
     },
   },
   shadows: [
@@ -83,7 +106,6 @@ const theme = createTheme({
       },
     },
   },
-  cssVariables: true,
 });
 
 export const CHART_COLORS = [
@@ -99,7 +121,21 @@ export const CHART_COLORS = [
   '#17becf',
 ];
 
-const selectionHighlightColor = theme.palette.primary.main;
+export const resolveCssVar = value => {
+  if (typeof value !== 'string' || !value.startsWith('var(') || typeof window === 'undefined') {
+    return value;
+  }
+  const inner = value.slice('var('.length, -1);
+  const separator = inner.indexOf(',');
+  const name = (separator === -1 ? inner : inner.slice(0, separator)).trim();
+  const fallback = separator === -1 ? undefined : inner.slice(separator + 1).trim();
+  const resolved = window.getComputedStyle(document.documentElement)
+    .getPropertyValue(name)
+    .trim();
+  return resolved || (fallback ? resolveCssVar(fallback) : value);
+};
+
+const selectionHighlightColor = PRIMARY;
 
 export { selectionHighlightColor };
 
