@@ -98,8 +98,13 @@ const Details = ({
           backgroundColor: 'rgba(255, 255, 255, 0.8)',
           backdropFilter: 'blur(8px)',
           margin: 1,
-          right: 40,
-          height: isTableActive ? 'calc(100vh - var(--table-height) - 16px)' : 'calc(100vh - 16px)',
+          right: 60,
+          height: 'auto',
+          maxHeight: isTableActive
+            ? 'calc(100vh - var(--table-height) - 16px)'
+            : 'calc(100vh - 16px)',
+          display: 'flex',
+          flexDirection: 'column',
           overflow: 'hidden',
           borderRadius: 1,
           border: '1px solid rgba(0, 0, 0, 0.1)',
@@ -107,7 +112,7 @@ const Details = ({
         },
       }}
     >
-      <Box sx={{ m: 1, overflow: 'auto' }}>
+      <Box sx={{ m: 1, minHeight: 0, overflow: 'auto' }}>
         <Card
           sx={{
             backgroundColor: 'rgba(255, 255, 255, 0.98)',
